@@ -16,9 +16,7 @@ public class EnrollmentService {
     private final Map<String, Enrollment> enrollmentMap = new ConcurrentHashMap<>();
 
     public synchronized Enrollment enroll(Student student, Course course) {
-        if (!course.isPublished()) {
-            throw new CourseNotPublishedException("Cannot enroll in unpublished course: " + course.getTitle());
-        }
+        course.enroll(student); // Delegates to State Pattern (DraftCourseState, PublishedCourseState, ArchivedCourseState)
 
         String key = student.getId() + ":" + course.getId();
         if (enrollmentMap.containsKey(key)) {

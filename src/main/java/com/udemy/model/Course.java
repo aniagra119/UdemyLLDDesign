@@ -1,6 +1,11 @@
 package com.udemy.model;
 
+import com.udemy.adapter.cdn.CdnStreamAdapter;
 import com.udemy.enums.CourseStatus;
+import com.udemy.state.CourseState;
+import com.udemy.state.DraftCourseState;
+import com.udemy.validation.chain.CourseValidationPipeline;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -10,7 +15,10 @@ public class Course extends BaseEntity implements CourseComponent {
     private String title;
     private String description;
     private double basePrice;
-    private CourseStatus status;
+    private CourseState state;
+    private CourseValidationPipeline validationPipeline;
+    private CdnStreamAdapter cdnAdapter;
+
     private final List<CourseAuthorship> authorships;
     private final List<Module> modules;
     private final List<Review> reviews;
@@ -25,7 +33,8 @@ public class Course extends BaseEntity implements CourseComponent {
             throw new IllegalArgumentException("basePrice cannot be negative: " + basePrice);
         }
         this.basePrice = basePrice;
-        this.status = CourseStatus.DRAFT;
+        this.state = new DraftCourseState();
+        this.validationPipeline = new CourseValidationPipeline();
         this.authorships = new ArrayList<>();
         this.modules = new ArrayList<>();
         this.reviews = new ArrayList<>();
@@ -41,7 +50,8 @@ public class Course extends BaseEntity implements CourseComponent {
             throw new IllegalArgumentException("basePrice cannot be negative: " + basePrice);
         }
         this.basePrice = basePrice;
-        this.status = CourseStatus.DRAFT;
+        this.state = new DraftCourseState();
+        this.validationPipeline = new CourseValidationPipeline();
         this.authorships = new ArrayList<>();
         this.modules = new ArrayList<>();
         this.reviews = new ArrayList<>();
@@ -81,27 +91,57 @@ public class Course extends BaseEntity implements CourseComponent {
     }
 
     public CourseStatus getStatus() {
-        return status;
+        return state.getStatus();
+    }
+
+    public CourseState getState() {
+        return state;
+    }
+
+    public void setState(CourseState state) {
+        this.state = Objects.requireNonNull(state, "state must not be null");
+        markUpdated();
+    }
+
+    public CourseValidationPipeline getValidationPipeline() {
+        return validationPipeline;
+    }
+
+    public void setValidationPipeline(CourseValidationPipeline validationPipeline) {
+        this.validationPipeline = validationPipeline;
+    }
+
+    public CdnStreamAdapter getCdnAdapter() {
+        return cdnAdapter;
+    }
+
+    public void setCdnAdapter(CdnStreamAdapter cdnAdapter) {
+        this.cdnAdapter = cdnAdapter;
+    }
+
+    public String generateStreamUrl(Lecture lecture, Student student, int expirySeconds) {
+        if (cdnAdapter == null) {
+            return lecture.getVideo() != null ? lecture.getVideo().getVideoUrl() : "";
+        }
+        return cdnAdapter.generateSecureStreamUrl(lecture.getVideo().getVideoUrl(), student.getId(), expirySeconds);
     }
 
     public void publish() {
-        if (modules.isEmpty() || getLectureCount() == 0) {
-            throw new IllegalStateException("Cannot publish an empty course without lectures");
-        }
-        if (authorships.isEmpty()) {
-            throw new IllegalStateException("Cannot publish a course without at least one instructor");
-        }
-        this.status = CourseStatus.PUBLISHED;
+        state.publish(this);
         markUpdated();
     }
 
     public void archive() {
-        this.status = CourseStatus.ARCHIVED;
+        state.archive(this);
         markUpdated();
     }
 
+    public void enroll(Student student) {
+        state.enrollStudent(this, student);
+    }
+
     public boolean isPublished() {
-        return this.status == CourseStatus.PUBLISHED;
+        return this.getStatus() == CourseStatus.PUBLISHED;
     }
 
     public List<CourseAuthorship> getAuthorships() {
@@ -127,9 +167,13 @@ public class Course extends BaseEntity implements CourseComponent {
     }
 
     public void addModule(Module module) {
+        state.addModule(this, module);
+        markUpdated();
+    }
+
+    public void doAddModule(Module module) {
         if (module != null && !modules.contains(module)) {
             modules.add(module);
-            markUpdated();
         }
     }
 
@@ -139,7 +183,6 @@ public class Course extends BaseEntity implements CourseComponent {
 
     public synchronized void addReview(Review review) {
         if (review != null) {
-            // Replace if existing review from same student
             reviews.removeIf(r -> r.getStudent().getId().equals(review.getStudent().getId()));
             reviews.add(review);
             recalculateRating();
