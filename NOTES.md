@@ -4,17 +4,18 @@ A comprehensive, production-grade reference for designing, implementing, and sca
 
 ---
 
-## 1. Domain Responsibility Boundaries
+## 1. Design Patterns & Domain Responsibility Matrix
 
-| Layer / Component | Type | Core Responsibility | Anti-Patterns to Avoid |
+| Pattern | Component | Core Responsibility | Why It Genuinely Makes Sense |
 | :--- | :--- | :--- | :--- |
-| **`Course`** | Aggregate Root / Composite | Course curriculum root, modules container, and moving average rating calculation. | **Never** embed direct HTTP streaming sockets inside Course entities. |
-| **`Module`** | Composite | Ordered collection of lectures within a course. Rolls up duration and lecture counts. | **Never** hardcode lecture indices as fixed array positions. |
-| **`Lecture`** | Composite Leaf | Holds mandatory primary `VideoContent` and polymorphic `LectureResource` attachments. | **Never** create subclass variants (`PdfLecture`, `VideoLecture`) when attachments are heterogeneous. |
-| **`CourseAuthorship`** | Association Entity | Models M:N multi-instructor relationships with revenue share percentages and explicit roles. | **Never** model instructors as a simple flat string or single foreign key. |
-| **`CourseProgress`** | Aggregate | Manages per-lecture playback positions and calculates real-time overall course completion percentage. | **Never** mutate progress asynchronously without synchronization. |
-| **`PlaybackService`** | Domain Service | Thread-safe intake for high-frequency client playback heartbeats (every 5–10s) and resume snapshot generation. | **Never** query disk or run heavy DB joins during active heartbeat beacons. |
-| **`ReviewService`** | Domain Service | Enforces verified purchase invariant, 1.0–5.0 star bounds, and triggers moving average recalculations. | **Never** allow unverified or duplicate reviews from the same learner. |
+| **Composite** | `CourseComponent` $\to$ `Course`, `Module`, `Lecture` | Uniform duration rollup and lecture counts across the curriculum tree. | Eliminates manual loops when aggregating duration across nested modules. |
+| **State** | `CourseState` (`Draft`, `Published`, `Archived`) | Encapsulates behavior and access control per lifecycle stage. | Prevents enrolling in draft/archived courses; locks syllabus changes once published to protect active learner progress. |
+| **Chain of Responsibility** | `PublishingValidationChain` (`InstructorCheck` $\to$ `CurriculumCheck` $\to$ `VideoQualityCheck`) | Automated quality and completeness gate before a course transitions to `PUBLISHED`. | Decouples compliance rules from the Course aggregate; allows adding copyright/audio checks without modifying entities. |
+| **Adapter** | `CdnStreamAdapter` (`AwsCloudFrontAdapter`, `CloudflareStreamAdapter`) | Bridges vendor streaming token APIs to a uniform internal interface. | Decouples playback logic from AWS CloudFront key-pairs or Cloudflare HMAC tokens; enables multi-CDN switching. |
+| **Builder** | `CourseBuilder`, `ModuleBuilder`, `LectureBuilder` | Fluent construction of complex 3-tier course hierarchies. | Eliminates telescoping constructors and nested collections boilerplate. |
+| **Strategy** | `CompletionCriteriaStrategy` (90% threshold), `PricingStrategy` (Standard, Promo) | Pluggable algorithms for video auto-completion and discounting. | Supports custom enterprise completion rules (e.g., 80% vs 100%) without altering core entities. |
+| **Observer** | `CourseEventPublisher` $\to$ `CertificateGeneratorListener` | Asynchronously generates certificates upon 100% course completion. | Decouples playback tracking from downstream notification and certification side-effects. |
+| **Facade** | `UdemyLearningPlatform` | High-level unified entry point for clients. | Coordinates catalog, playback, enrollment, and review services. |
 
 ---
 
@@ -73,15 +74,3 @@ To guarantee review authenticity:
 4. **Moving Average Formula**:
    $$\bar{R} = \frac{\sum_{i=1}^{N} R_i}{N}$$
    Rounded to 2 decimal places.
-
----
-
-## 5. Socratic Interview Trade-offs & Rubric
-
-| Dimension | Junior Approach | Senior / Staff Architect Resolution |
-| :--- | :--- | :--- |
-| **Curriculum Structure** | Flat list of lectures with arbitrary string module names. | **Composite Pattern** (`CourseComponent` $\to$ `Course`, `Module`, `Lecture`) aggregating duration and lecture counts recursively. |
-| **Multi-Instructors** | Single `instructorId` foreign key on Course. | **Association Entity** (`CourseAuthorship`) with explicit `AuthorshipRole` and revenue split percentage. |
-| **Media Attachments** | Subclassing lectures (`VideoLecture`, `PdfLecture`). | **Polymorphic Resources** (`LectureResource` $\to$ `FileAttachment`, `ReadingLink`) attached to a single Lecture holding a primary `VideoContent`. |
-| **Progress Resume** | Storing only a single global integer percentage on enrollment. | Granular **`LectureProgress`** with `lastWatchedPositionSeconds`, `maxWatchedPositionSeconds`, and `PlaybackResumeSnapshot`. |
-| **Course Completion** | Polling database tables on client refresh. | **Observer Pattern** (`CourseEventPublisher`) asynchronously triggering `CertificateGeneratorListener`. |

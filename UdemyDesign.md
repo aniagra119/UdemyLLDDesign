@@ -1,6 +1,6 @@
-# Enterprise Online Learning Platform (Udemy) — Low-Level Design Specification
+# Enterprise Online Learning Platform (Udemy) — Master Design Specification
 
-A production-grade, extensible Low-Level Design (LLD) and machine coding architecture for an enterprise online learning, video streaming, and course management platform.
+A comprehensive, production-grade Low-Level Design (LLD) and machine coding architecture for an enterprise online learning, video streaming, and course management platform.
 
 ---
 
@@ -8,20 +8,37 @@ A production-grade, extensible Low-Level Design (LLD) and machine coding archite
 
 ```
                                   ┌───────────────────────────┐
-                                  │   UdemyLearningPlatform   │
+                                  │   UdemyLearningPlatform   │ (Facade)
                                   └─────────────┬─────────────┘
                                                 │
          ┌────────────────────────┬─────────────┴─────────────┬────────────────────────┐
          ▼                        ▼                           ▼                        ▼
 ┌─────────────────┐      ┌─────────────────┐         ┌─────────────────┐      ┌─────────────────┐
 │CourseCatalogSvc │      │EnrollmentService│         │ PlaybackService │      │  ReviewService  │
-│Course & Modules │      │Idempotent Enroll│         │Heartbeats&Resume│      │Verified Ratings │
+│  - State Pattern│      │  - State Guard  │         │  - Heartbeats   │      │  - Verified Only│
+│  - Chain Audit  │      │  - Idempotent   │         │  - Resume Snap  │      │  - Clamped Stars│
+│  - CDN Adapter  │      │    Enrollment   │         │  - 90% Threshold│      │  - Moving Avg   │
 └─────────────────┘      └─────────────────┘         └─────────────────┘      └─────────────────┘
 ```
 
 ---
 
-## 2. Master UML Class Diagram
+## 2. Design Pattern Catalog
+
+| Pattern | Category | Concrete Implementation | Architectural Motivation |
+| :--- | :--- | :--- | :--- |
+| **Composite** | Structural | `CourseComponent` $\to$ `Course`, `Module`, `Lecture` | Uniform duration rollup and lecture counts across the curriculum tree. |
+| **State** | Behavioral | `CourseState` (`DraftCourseState`, `PublishedCourseState`, `ArchivedCourseState`) | Governs lifecycle transitions; rejects student enrollment in draft/archived states; locks curriculum modifications when published. |
+| **Chain of Responsibility** | Behavioral | `CoursePublishingValidator` (`InstructorValidator` $\to$ `CurriculumCompletenessValidator` $\to$ `VideoQualityValidator`) | Enforces modular, fail-fast publishing audits (100% revenue share, non-empty curriculum, valid video duration) before a course goes live. |
+| **Adapter** | Structural | `CdnStreamAdapter` (`AwsCloudFrontAdapter`, `CloudflareStreamAdapter`) | Bridges vendor-specific signed streaming token APIs (CloudFront Key-Pair signed URLs vs Cloudflare HMAC HLS manifests) to a uniform internal streaming interface. |
+| **Builder** | Creational | `CourseBuilder`, `ModuleBuilder`, `LectureBuilder` | Provides a fluent, type-safe DSL to assemble 3-tier course hierarchies with nested lectures, videos, and multi-instructor splits. |
+| **Strategy** | Behavioral | `CompletionCriteriaStrategy` (90% auto-complete threshold), `PricingStrategy` (Standard, Promotional Tier) | Pluggable algorithms for video completion thresholds and dynamic discounting. |
+| **Observer** | Behavioral | `CourseEventPublisher` $\to$ `CertificateGeneratorListener` | Asynchronously generates student completion certificates upon 100% course completion without coupling playback code. |
+| **Facade** | Structural | `UdemyLearningPlatform` | Unified entry point coordinating catalog, playback, enrollment, and ratings. |
+
+---
+
+## 3. Master UML Class Diagram
 
 ```mermaid
 classDiagram
@@ -31,7 +48,6 @@ classDiagram
     class CourseStatus {
         <<enumeration>>
         DRAFT
-        SUBMITTED_FOR_REVIEW
         PUBLISHED
         ARCHIVED
     }
@@ -103,6 +119,103 @@ classDiagram
         +getRevenueSharePercentage() double
     }
 
+    %% State Pattern
+    class CourseState {
+        <<interface>>
+        +addModule(Course course, Module module) void
+        +publish(Course course) void
+        +archive(Course course) void
+        +enrollStudent(Course course, Student student) void
+        +getStatus() CourseStatus
+    }
+
+    class DraftCourseState {
+        +addModule(Course course, Module module) void
+        +publish(Course course) void
+        +archive(Course course) void
+        +enrollStudent(Course course, Student student) void
+        +getStatus() CourseStatus
+    }
+
+    class PublishedCourseState {
+        +addModule(Course course, Module module) void
+        +publish(Course course) void
+        +archive(Course course) void
+        +enrollStudent(Course course, Student student) void
+        +getStatus() CourseStatus
+    }
+
+    class ArchivedCourseState {
+        +addModule(Course course, Module module) void
+        +publish(Course course) void
+        +archive(Course course) void
+        +enrollStudent(Course course, Student student) void
+        +getStatus() CourseStatus
+    }
+
+    CourseState <|.. DraftCourseState
+    CourseState <|.. PublishedCourseState
+    CourseState <|.. ArchivedCourseState
+
+    %% Chain of Responsibility
+    class CoursePublishingValidator {
+        <<interface>>
+        +setNext(CoursePublishingValidator next) void
+        +validate(Course course) void
+    }
+
+    class AbstractCoursePublishingValidator {
+        <<abstract>>
+        #CoursePublishingValidator next
+        +setNext(CoursePublishingValidator next) void
+        #passToNext(Course course) void
+    }
+
+    class InstructorValidator {
+        +validate(Course course) void
+    }
+
+    class CurriculumCompletenessValidator {
+        +validate(Course course) void
+    }
+
+    class VideoQualityValidator {
+        +validate(Course course) void
+    }
+
+    class CourseValidationPipeline {
+        -CoursePublishingValidator headValidator
+        +validate(Course course) void
+    }
+
+    CoursePublishingValidator <|.. AbstractCoursePublishingValidator
+    AbstractCoursePublishingValidator <|-- InstructorValidator
+    AbstractCoursePublishingValidator <|-- CurriculumCompletenessValidator
+    AbstractCoursePublishingValidator <|-- VideoQualityValidator
+    CourseValidationPipeline o-- CoursePublishingValidator
+
+    %% CDN Adapter Pattern
+    class CdnStreamAdapter {
+        <<interface>>
+        +generateSecureStreamUrl(String path, String studentId, int expirySeconds) String
+        +getProviderName() String
+    }
+
+    class AwsCloudFrontAdapter {
+        -AwsCloudFrontClient cloudFrontClient
+        +generateSecureStreamUrl(String path, String studentId, int expirySeconds) String
+        +getProviderName() String
+    }
+
+    class CloudflareStreamAdapter {
+        -CloudflareStreamClient cloudflareClient
+        +generateSecureStreamUrl(String path, String studentId, int expirySeconds) String
+        +getProviderName() String
+    }
+
+    CdnStreamAdapter <|.. AwsCloudFrontAdapter
+    CdnStreamAdapter <|.. CloudflareStreamAdapter
+
     %% Course Composite & Catalog
     class CourseComponent {
         <<interface>>
@@ -116,7 +229,9 @@ classDiagram
         -String title
         -String description
         -double basePrice
-        -CourseStatus status
+        -CourseState state
+        -CourseValidationPipeline validationPipeline
+        -CdnStreamAdapter cdnAdapter
         -List~CourseAuthorship~ authorships
         -List~Module~ modules
         -List~Review~ reviews
@@ -124,9 +239,9 @@ classDiagram
         -int totalRatingsCount
         +publish() void
         +archive() void
+        +enroll(Student student) void
         +addModule(Module module) void
-        +addAuthorship(CourseAuthorship authorship) void
-        +addReview(Review review) void
+        +generateStreamUrl(Lecture lecture, Student student, int expirySeconds) String
         +getDurationSeconds() int
         +getLectureCount() int
         +getAverageRating() double
@@ -153,200 +268,63 @@ classDiagram
         +getLectureCount() int
     }
 
-    %% Media & Resources
-    class VideoContent {
-        -String videoUrl
-        -int durationSeconds
-        -String previewThumbnailUrl
-        -Map~String, String~ streamingResolutions
-        +getVideoUrl() String
-        +getDurationSeconds() int
-        +addStreamingResolution(String res, String url) void
-    }
-
-    class LectureResource {
-        <<abstract>>
-        #String title
-        #ResourceType resourceType
-        +getTitle() String
-        +getResourceType() ResourceType
-    }
-
-    class FileAttachment {
-        -String fileUrl
-        -long fileSizeBytes
-        -String fileExtension
-        +getFileUrl() String
-        +getFileSizeBytes() long
-        +getFileExtension() String
-    }
-
-    class ReadingLink {
-        -String targetUrl
-        -String description
-        +getTargetUrl() String
-        +getDescription() String
-    }
-
-    %% Progress & Resumable Playback
-    class Enrollment {
-        -Student student
-        -Course course
-        -EnrollmentStatus status
-        -LocalDateTime enrolledAt
-        -LocalDateTime completedAt
-        -CourseProgress progress
-        -CompletionCriteriaStrategy completionStrategy
-        +recordPlayback(String lectureId, int currentSeconds, int totalDurationSeconds) void
-        +resumePlayback() Optional~PlaybackResumeSnapshot~
-        +isCompleted() boolean
-    }
-
-    class CourseProgress {
-        -String enrollmentId
-        -String lastAccessedLectureId
-        -Map~String, LectureProgress~ lectureProgressMap
-        +recordPlayback(String lectureId, int currentSeconds, int totalDurationSeconds, CompletionCriteriaStrategy strategy) void
-        +getCompletedLectureCount() int
-        +getCompletionPercentage(int totalLectures) double
-        +isCourseCompleted(int totalLectures) boolean
-        +getResumeSnapshot(Course course) Optional~PlaybackResumeSnapshot~
-    }
-
-    class LectureProgress {
-        -String lectureId
-        -int lastWatchedPositionSeconds
-        -int maxWatchedPositionSeconds
-        -boolean completed
-        -LocalDateTime lastAccessedAt
-        +updatePosition(int currentSeconds, int totalDurationSeconds, CompletionCriteriaStrategy strategy) void
-        +markCompleted() void
-        +getLastWatchedPositionSeconds() int
-        +isCompleted() boolean
-    }
-
-    class PlaybackResumeSnapshot {
-        -String courseId
-        -String moduleId
-        -String lectureId
-        -String lectureTitle
-        -int resumePositionSeconds
-        -int totalDurationSeconds
-        +getFormattedResumeTime() String
-        +getResumePositionSeconds() int
-        +getTotalDurationSeconds() int
-    }
-
-    %% Reviews
-    class Review {
-        -Student student
-        -String courseId
-        -double rating
-        -String feedbackComment
-        +getStudent() Student
-        +getRating() double
-        +getFeedbackComment() String
-    }
-
-    %% Strategies & Events
-    class CompletionCriteriaStrategy {
-        <<interface>>
-        +isLectureCompleted(int lastSec, int maxSec, int totalDuration) boolean
-    }
-
-    class PercentageThresholdCompletionStrategy {
-        -double thresholdPercentage
-        +isLectureCompleted(int lastSec, int maxSec, int totalDuration) boolean
-    }
-
-    class CourseEventPublisher {
-        -List~CourseEventListener~ listeners
-        +subscribe(CourseEventListener listener) void
-        +publishCourseCompleted(Enrollment enrollment) void
-    }
-
-    class CourseEventListener {
-        <<interface>>
-        +onCourseCompleted(Enrollment enrollment) void
-    }
-
-    class CertificateGeneratorListener {
-        -List~String~ generatedCertificates
-        +onCourseCompleted(Enrollment enrollment) void
-        +hasCertificate(String studentId, String courseId) boolean
-    }
-
-    %% Facade
-    class UdemyLearningPlatform {
-        -CourseCatalogService catalogService
-        -EnrollmentService enrollmentService
-        -PlaybackService playbackService
-        -ReviewService reviewService
-        -CourseEventPublisher eventPublisher
-        +registerCourse(Course course) void
-        +publishCourse(String courseId) void
-        +enroll(Student student, String courseId) Enrollment
-        +recordPlaybackHeartbeat(Student student, String courseId, String lectureId, int timestamp) void
-        +resumePlayback(Student student, String courseId) Optional~PlaybackResumeSnapshot~
-        +rateCourse(Student student, String courseId, double rating, String comment) Review
-    }
-
-    %% Relationships
-    BaseEntity <|-- User
-    BaseEntity <|-- CourseAuthorship
-    BaseEntity <|-- Course
-    BaseEntity <|-- Module
-    BaseEntity <|-- Lecture
-    BaseEntity <|-- LectureResource
-    BaseEntity <|-- Enrollment
-    BaseEntity <|-- Review
-
-    User <|-- Instructor
-    User <|-- Student
-
     CourseComponent <|.. Course
     CourseComponent <|.. Module
     CourseComponent <|.. Lecture
 
     Course "1" *-- "1..*" Module : contains ordered
     Module "1" *-- "1..*" Lecture : contains ordered
-    Lecture "1" *-- "1" VideoContent : primary video
-    Lecture "1" *-- "0..*" LectureResource : attachments
-
-    LectureResource <|-- FileAttachment
-    LectureResource <|-- ReadingLink
-
+    Course "1" o-- "1" CourseState : delegates lifecycle
+    Course "1" o-- "1" CourseValidationPipeline : audit before publish
+    Course "1" o-- "0..1" CdnStreamAdapter : streaming provider
     Course "1" *-- "1..*" CourseAuthorship : co-authored through
-    Instructor "1" *-- "0..*" CourseAuthorship : participates in
 
-    Student "1" o-- "0..*" Enrollment : enrolls
-    Course "1" o-- "0..*" Enrollment : enrolled students
-    Enrollment "1" *-- "1" CourseProgress : manages
-    CourseProgress "1" *-- "0..*" LectureProgress : per lecture
-    CourseProgress ..> PlaybackResumeSnapshot : generates
+    %% Builder Pattern
+    class CourseBuilder {
+        +create(String title, String desc, double price)$ CourseBuilder
+        +withLeadInstructor(Instructor inst, double share) CourseBuilder
+        +withCoInstructor(Instructor inst, double share) CourseBuilder
+        +withCdnAdapter(CdnStreamAdapter adapter) CourseBuilder
+        +addModule(String title, Consumer~ModuleBuilder~ cfg) CourseBuilder
+        +build() Course
+    }
 
-    Course "1" *-- "0..*" Review : receives
-    Student "1" --> "0..*" Review : authors
-
-    CompletionCriteriaStrategy <|.. PercentageThresholdCompletionStrategy
-    Enrollment --> CompletionCriteriaStrategy
-
-    CourseEventPublisher o-- "0..*" CourseEventListener
-    CourseEventListener <|.. CertificateGeneratorListener
-    Enrollment ..> CourseEventPublisher : triggers completion
-
-    UdemyLearningPlatform --> CourseCatalogService
-    UdemyLearningPlatform --> EnrollmentService
-    UdemyLearningPlatform --> PlaybackService
-    UdemyLearningPlatform --> ReviewService
-    UdemyLearningPlatform --> CourseEventPublisher
+    CourseBuilder ..> Course : builds
 ```
 
 ---
 
-## 3. Sequence Diagrams
+## 4. Key Sequence Flows
 
-### 3.1 Resuming Video Playback Workflow
+### 4.1 Course Publishing Pipeline with Chain of Responsibility & State Pattern
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Instructor
+    participant Course as Course Aggregate
+    participant State as DraftCourseState
+    participant Pipeline as CourseValidationPipeline
+    participant InstVal as InstructorValidator
+    participant CurrVal as CurriculumCompletenessValidator
+    participant VideoVal as VideoQualityValidator
+    participant PubState as PublishedCourseState
+
+    Instructor ->> Course: publish()
+    Course ->> State: publish(course)
+    State ->> Pipeline: validate(course)
+    Pipeline ->> InstVal: validate(course)
+    Note over InstVal: Verifies >=1 instructor & 100% revenue share
+    InstVal ->> CurrVal: validate(course)
+    Note over CurrVal: Verifies non-empty modules & lectures
+    CurrVal ->> VideoVal: validate(course)
+    Note over VideoVal: Verifies video content & duration > 0
+    VideoVal -->> State: Validation Passed!
+    State ->> Course: setState(new PublishedCourseState())
+    Note over Course: Status is now PUBLISHED; enrollments enabled!
+```
+
+### 4.2 Resumable Playback with Drop-off Tracking
 
 ```mermaid
 sequenceDiagram
@@ -357,7 +335,7 @@ sequenceDiagram
     participant Enrollment as Enrollment
     participant Progress as CourseProgress
 
-    Note over Learner, Platform: Learner previously watched 10 mins (600s) of a 30 mins lecture
+    Note over Learner, Platform: Learner watched 10 mins (600s) of a 30 mins lecture, then closed browser
     Learner ->> Platform: resumePlayback(student, courseId)
     Platform ->> PlaybackSvc: resumePlayback(enrollment)
     PlaybackSvc ->> Enrollment: resumePlayback()
@@ -367,27 +345,4 @@ sequenceDiagram
     PlaybackSvc -->> Platform: Optional[PlaybackResumeSnapshot]
     Platform -->> Learner: Resume snapshot {lecture: "Fiber Nodes", offset: 600s}
     Note over Learner: Video player seeks directly to 10:00 mark!
-```
-
-### 3.2 Asynchronous Completion & Certification Workflow
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Learner as Student
-    participant Platform as UdemyLearningPlatform
-    participant PlaybackSvc as PlaybackService
-    participant Enrollment as Enrollment
-    participant Publisher as CourseEventPublisher
-    participant CertListener as CertificateGeneratorListener
-
-    Learner ->> Platform: recordPlaybackHeartbeat(student, courseId, finalLectureId, 1150s)
-    Platform ->> PlaybackSvc: recordHeartbeat(enrollment, finalLectureId, 1150s)
-    PlaybackSvc ->> Enrollment: recordPlayback(finalLectureId, 1150s, 1200s)
-    Note over Enrollment: Watched >= 90% threshold -> All lectures complete!
-    Enrollment ->> Enrollment: setStatus(COMPLETED)
-    PlaybackSvc -->> Platform: Playback recorded
-    Platform ->> Publisher: publishCourseCompleted(enrollment)
-    Publisher ->> CertListener: onCourseCompleted(enrollment)
-    CertListener ->> CertListener: generateCertificate("CERT-{courseId}-{studentId}")
 ```
