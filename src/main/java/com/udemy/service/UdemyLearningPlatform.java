@@ -6,10 +6,16 @@ import com.udemy.exception.UnenrolledStudentException;
 import com.udemy.model.Course;
 import com.udemy.model.Review;
 import com.udemy.model.Student;
+import com.udemy.order.Order;
+import com.udemy.order.OrderItem;
+import com.udemy.order.OrderService;
+import com.udemy.payment.PaymentMethod;
+import com.udemy.payment.PaymentProcessorFactory;
 import com.udemy.progress.Enrollment;
 import com.udemy.progress.PlaybackResumeSnapshot;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -19,6 +25,8 @@ public class UdemyLearningPlatform {
     private final PlaybackService playbackService;
     private final ReviewService reviewService;
     private final CourseEventPublisher eventPublisher;
+    private final PaymentProcessorFactory paymentProcessorFactory;
+    private final OrderService orderService;
 
     public UdemyLearningPlatform() {
         this.catalogService = new CourseCatalogService();
@@ -26,6 +34,12 @@ public class UdemyLearningPlatform {
         this.playbackService = new PlaybackService();
         this.reviewService = new ReviewService();
         this.eventPublisher = new CourseEventPublisher();
+        this.paymentProcessorFactory = new PaymentProcessorFactory();
+        this.orderService = new OrderService(paymentProcessorFactory, enrollmentService);
+    }
+
+    public Order purchaseCourses(Student student, List<OrderItem> items, PaymentMethod paymentMethod, Map<String, String> paymentDetails) {
+        return orderService.checkout(student, items, paymentMethod, paymentDetails);
     }
 
     public void registerCourse(Course course) {
@@ -87,5 +101,13 @@ public class UdemyLearningPlatform {
 
     public ReviewService getReviewService() {
         return reviewService;
+    }
+
+    public PaymentProcessorFactory getPaymentProcessorFactory() {
+        return paymentProcessorFactory;
+    }
+
+    public OrderService getOrderService() {
+        return orderService;
     }
 }
