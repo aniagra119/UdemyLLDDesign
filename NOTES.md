@@ -1,10 +1,10 @@
 # Enterprise Online Learning Platform (Udemy) — Master Architecture & Engineering Guide
 
-A comprehensive, production-grade reference for designing, implementing, and scaling online learning platforms, video playback resume engines, and course rating systems.
+A comprehensive, production-grade reference for designing, implementing, and scaling online learning platforms, video playback resume engines, multi-course checkout, and course rating systems.
 
 ---
 
-## 1. Design Patterns & Domain Responsibility Matrix
+## 1. Complete Design Patterns & Domain Responsibility Matrix
 
 | Pattern | Component | Core Responsibility | Why It Genuinely Makes Sense |
 | :--- | :--- | :--- | :--- |
@@ -12,14 +12,37 @@ A comprehensive, production-grade reference for designing, implementing, and sca
 | **State** | `CourseState` (`Draft`, `Published`, `Archived`) | Encapsulates behavior and access control per lifecycle stage. | Prevents enrolling in draft/archived courses; locks syllabus changes once published to protect active learner progress. |
 | **Chain of Responsibility** | `PublishingValidationChain` (`InstructorCheck` $\to$ `CurriculumCheck` $\to$ `VideoQualityCheck`) | Automated quality and completeness gate before a course transitions to `PUBLISHED`. | Decouples compliance rules from the Course aggregate; allows adding copyright/audio checks without modifying entities. |
 | **Adapter** | `CdnStreamAdapter` (`AwsCloudFrontAdapter`, `CloudflareStreamAdapter`) | Bridges vendor streaming token APIs to a uniform internal interface. | Decouples playback logic from AWS CloudFront key-pairs or Cloudflare HMAC tokens; enables multi-CDN switching. |
+| **Decorator** | `CourseProduct` $\to$ `VerifiedCertificateAddon`, `MentorshipDoubtSupportAddon`, `OfflineDownloadAddon` | Dynamically wraps courses with value-added features and fee structures. | Handles combinatorial entitlement bundles ($2^N$) without class hierarchy explosion. |
+| **Command** | `PlaybackCommand` (`SeekPlaybackCommand`, `AddBookmarkCommand`, `ToggleLectureCompleteCommand`) | Encapsulates user playback interactions with undo stack and audit logs. | Enables scrubbing rollback, note bookmark undo, and offline command synchronization queues. |
+| **Factory / Registry** | `PaymentProcessorFactory` | Decoupled factory registry mapping `PaymentMethod` to processors. | Open-Closed Principle (OCP): new payment methods can be registered without editing checkout code. |
+| **Strategy** | `PaymentProcessor` SPI, `CompletionCriteriaStrategy` (90% threshold), `PricingStrategy` | Pluggable algorithms for financial settlement, video auto-completion, and discounting. | Supports custom payment vendors and custom completion rules without altering core entities. |
 | **Builder** | `CourseBuilder`, `ModuleBuilder`, `LectureBuilder` | Fluent construction of complex 3-tier course hierarchies. | Eliminates telescoping constructors and nested collections boilerplate. |
-| **Strategy** | `CompletionCriteriaStrategy` (90% threshold), `PricingStrategy` (Standard, Promo) | Pluggable algorithms for video auto-completion and discounting. | Supports custom enterprise completion rules (e.g., 80% vs 100%) without altering core entities. |
 | **Observer** | `CourseEventPublisher` $\to$ `CertificateGeneratorListener` | Asynchronously generates certificates upon 100% course completion. | Decouples playback tracking from downstream notification and certification side-effects. |
-| **Facade** | `UdemyLearningPlatform` | High-level unified entry point for clients. | Coordinates catalog, playback, enrollment, and review services. |
+| **Facade** | `UdemyLearningPlatform` | High-level unified entry point for clients. | Coordinates catalog, playback, multi-course checkout, and review services. |
 
 ---
 
-## 2. Resumable Video Playback Mechanics
+## 2. Multi-Course Checkout & Financial Settlement Architecture
+
+In Udemy and Coursera, learners frequently add multiple courses to a cart and checkout in one transaction.
+
+```
+[ Shopping Cart (2 Courses) ] ──► OrderService.checkout(student, items, method, details)
+                                           │
+                                ┌──────────┴──────────┐
+                                ▼                     ▼
+                    PaymentProcessorFactory       Order Aggregate
+                    • Resolves PaymentProcessor   • State: CREATED ──► PAID / FAILED
+                    • CreditCard / UPI / PayPal   • Calculates total payable amount
+                                │
+                                ▼ (On Payment Success)
+                    EnrollmentService.enroll(student, course)
+                    • Creates atomic enrollments for all courses in order
+```
+
+---
+
+## 3. Resumable Video Playback Mechanics
 
 ### The 10-Minute Drop-off Invariant
 When a learner watches 10 minutes (600s) of a 30-minute (1800s) lecture and drops off:
@@ -40,7 +63,7 @@ When a learner watches 10 minutes (600s) of a 30-minute (1800s) lecture and drop
 
 ---
 
-## 3. Concurrency & High-Frequency Heartbeats
+## 4. Concurrency & High-Frequency Heartbeats
 
 In a large-scale streaming platform, learners on web and mobile devices emit heartbeats every 5 seconds. Scrubbing forward/backward causes out-of-order beacon delivery:
 
@@ -61,7 +84,7 @@ public synchronized void updatePosition(int currentSeconds, int totalDurationSec
 
 ---
 
-## 4. Verified Review & Moving Average Rating Math
+## 5. Verified Review & Moving Average Rating Math
 
 To guarantee review authenticity:
 1. **Verified Purchase Invariant**:

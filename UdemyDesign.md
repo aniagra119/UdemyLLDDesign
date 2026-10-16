@@ -1,10 +1,10 @@
 # Enterprise Online Learning Platform (Udemy) — Master Design Specification
 
-A comprehensive, production-grade Low-Level Design (LLD) and machine coding architecture for an enterprise online learning, video streaming, and course management platform.
+A comprehensive, production-grade Low-Level Design (LLD) and machine coding architecture for an enterprise online learning, video streaming, multi-course checkout, and resumable playback platform.
 
 ---
 
-## 1. Domain Decomposition & Architecture
+## 1. High-Level Domain Decomposition
 
 ```
                                   ┌───────────────────────────┐
@@ -14,16 +14,17 @@ A comprehensive, production-grade Low-Level Design (LLD) and machine coding arch
          ┌────────────────────────┬─────────────┴─────────────┬────────────────────────┐
          ▼                        ▼                           ▼                        ▼
 ┌─────────────────┐      ┌─────────────────┐         ┌─────────────────┐      ┌─────────────────┐
-│CourseCatalogSvc │      │EnrollmentService│         │ PlaybackService │      │  ReviewService  │
-│  - State Pattern│      │  - State Guard  │         │  - Heartbeats   │      │  - Verified Only│
-│  - Chain Audit  │      │  - Idempotent   │         │  - Resume Snap  │      │  - Clamped Stars│
-│  - CDN Adapter  │      │    Enrollment   │         │  - 90% Threshold│      │  - Moving Avg   │
+│CourseCatalogSvc │      │  OrderService   │         │ PlaybackService │      │  ReviewService  │
+│  - State Pattern│      │  - Multi-Course │         │  - Command Ptr  │      │  - Verified Only│
+│  - Chain Audit  │      │  - Payment SPI  │         │  - Heartbeats   │      │  - Clamped Stars│
+│  - CDN Adapter  │      │  - Decorator Add│         │  - Resume Snap  │      │  - Moving Avg   │
+│  - Builder DSL  │      │  - Auto-Enroll  │         │  - 90% Threshold│      │                 │
 └─────────────────┘      └─────────────────┘         └─────────────────┘      └─────────────────┘
 ```
 
 ---
 
-## 2. Design Pattern Catalog
+## 2. Complete Design Pattern Catalog
 
 | Pattern | Category | Concrete Implementation | Architectural Motivation |
 | :--- | :--- | :--- | :--- |
@@ -32,9 +33,12 @@ A comprehensive, production-grade Low-Level Design (LLD) and machine coding arch
 | **Chain of Responsibility** | Behavioral | `CoursePublishingValidator` (`InstructorValidator` $\to$ `CurriculumCompletenessValidator` $\to$ `VideoQualityValidator`) | Enforces modular, fail-fast publishing audits (100% revenue share, non-empty curriculum, valid video duration) before a course goes live. |
 | **Adapter** | Structural | `CdnStreamAdapter` (`AwsCloudFrontAdapter`, `CloudflareStreamAdapter`) | Bridges vendor-specific signed streaming token APIs (CloudFront Key-Pair signed URLs vs Cloudflare HMAC HLS manifests) to a uniform internal streaming interface. |
 | **Builder** | Creational | `CourseBuilder`, `ModuleBuilder`, `LectureBuilder` | Provides a fluent, type-safe DSL to assemble 3-tier course hierarchies with nested lectures, videos, and multi-instructor splits. |
-| **Strategy** | Behavioral | `CompletionCriteriaStrategy` (90% auto-complete threshold), `PricingStrategy` (Standard, Promotional Tier) | Pluggable algorithms for video completion thresholds and dynamic discounting. |
+| **Decorator** | Structural | `CourseAddonDecorator` (`VerifiedCertificateAddon`, `MentorshipDoubtSupportAddon`, `OfflineDownloadAddon`) | Dynamically bundles optional value-added services onto courses without subclass explosion. |
+| **Command** | Behavioral | `PlaybackCommand` (`SeekPlaybackCommand`, `AddBookmarkCommand`, `ToggleLectureCompleteCommand`) | Encapsulates user playback interactions with undo stack and audit log history. |
+| **Factory / Registry** | Creational | `PaymentProcessorFactory` | Decoupled registry mapping `PaymentMethod` to concrete `PaymentProcessor` implementations. |
+| **Strategy** | Behavioral | `PaymentProcessor` SPI, `CompletionCriteriaStrategy` (90% threshold), `PricingStrategy` (Standard, Promo) | Pluggable algorithms for financial settlement, video auto-completion, and dynamic discounting. |
 | **Observer** | Behavioral | `CourseEventPublisher` $\to$ `CertificateGeneratorListener` | Asynchronously generates student completion certificates upon 100% course completion without coupling playback code. |
-| **Facade** | Structural | `UdemyLearningPlatform` | Unified entry point coordinating catalog, playback, enrollment, and ratings. |
+| **Facade** | Structural | `UdemyLearningPlatform` | Unified entry point coordinating catalog, playback, multi-course checkout, and ratings. |
 
 ---
 
@@ -52,19 +56,19 @@ classDiagram
         ARCHIVED
     }
 
-    class ResourceType {
+    class PaymentMethod {
         <<enumeration>>
-        VIDEO
-        FILE_ATTACHMENT
-        READING_LINK
+        CREDIT_CARD
+        UPI
+        PAYPAL
     }
 
-    class EnrollmentStatus {
+    class OrderStatus {
         <<enumeration>>
-        ACTIVE
-        COMPLETED
-        REFUNDED
-        SUSPENDED
+        CREATED
+        PAID
+        FAILED
+        CANCELLED
     }
 
     class AuthorshipRole {
@@ -90,17 +94,14 @@ classDiagram
         <<abstract>>
         #String email
         #String fullName
-        #String profilePictureUrl
         +getEmail() String
         +getFullName() String
     }
 
     class Instructor {
-        -String biography
         -String expertiseArea
         -List~CourseAuthorship~ authorships
         +addAuthorship(CourseAuthorship authorship) void
-        +getAuthorships() List~CourseAuthorship~
     }
 
     class Student {
@@ -279,70 +280,176 @@ classDiagram
     Course "1" o-- "0..1" CdnStreamAdapter : streaming provider
     Course "1" *-- "1..*" CourseAuthorship : co-authored through
 
-    %% Builder Pattern
-    class CourseBuilder {
-        +create(String title, String desc, double price)$ CourseBuilder
-        +withLeadInstructor(Instructor inst, double share) CourseBuilder
-        +withCoInstructor(Instructor inst, double share) CourseBuilder
-        +withCdnAdapter(CdnStreamAdapter adapter) CourseBuilder
-        +addModule(String title, Consumer~ModuleBuilder~ cfg) CourseBuilder
-        +build() Course
+    %% Decorator Pattern for Addons
+    class CourseProduct {
+        <<interface>>
+        +getCourse() Course
+        +getDescription() String
+        +getPrice() double
+        +getEntitlements() List~String~
     }
 
-    CourseBuilder ..> Course : builds
+    class BaseCourseProduct {
+        -Course course
+        +getPrice() double
+        +getEntitlements() List~String~
+    }
+
+    class CourseAddonDecorator {
+        <<abstract>>
+        #CourseProduct wrappedProduct
+        +getCourse() Course
+    }
+
+    class VerifiedCertificateAddon {
+        +getPrice() double
+        +getEntitlements() List~String~
+    }
+
+    class MentorshipDoubtSupportAddon {
+        +getPrice() double
+        +getEntitlements() List~String~
+    }
+
+    class OfflineDownloadAddon {
+        +getPrice() double
+        +getEntitlements() List~String~
+    }
+
+    CourseProduct <|.. BaseCourseProduct
+    CourseProduct <|.. CourseAddonDecorator
+    CourseAddonDecorator <|-- VerifiedCertificateAddon
+    CourseAddonDecorator <|-- MentorshipDoubtSupportAddon
+    CourseAddonDecorator <|-- OfflineDownloadAddon
+
+    %% Command Pattern for Playback
+    class PlaybackCommand {
+        <<interface>>
+        +execute() void
+        +undo() void
+        +getDescription() String
+    }
+
+    class SeekPlaybackCommand {
+        -Enrollment enrollment
+        -String lectureId
+        -int targetSeconds
+        -int previousSeconds
+        +execute() void
+        +undo() void
+    }
+
+    class AddBookmarkCommand {
+        -List~Bookmark~ bookmarkList
+        -Bookmark bookmark
+        +execute() void
+        +undo() void
+    }
+
+    class PlaybackHistoryManager {
+        -Deque~PlaybackCommand~ undoStack
+        -List~String~ executionAuditLog
+        +executeCommand(PlaybackCommand command) void
+        +undo() boolean
+    }
+
+    PlaybackCommand <|.. SeekPlaybackCommand
+    PlaybackCommand <|.. AddBookmarkCommand
+    PlaybackHistoryManager o-- PlaybackCommand
+
+    %% Multi-Course Order & Payment SPI
+    class PaymentProcessor {
+        <<interface>>
+        +process(PaymentRequest request) PaymentResult
+        +getSupportedMethod() PaymentMethod
+    }
+
+    class PaymentProcessorFactory {
+        -Map~PaymentMethod, PaymentProcessor~ registry
+        +register(PaymentProcessor processor) void
+        +getProcessor(PaymentMethod method) PaymentProcessor
+    }
+
+    class Order {
+        -Student student
+        -List~OrderItem~ items
+        -double totalAmount
+        -OrderStatus status
+        -PaymentResult paymentResult
+        +addItem(OrderItem item) void
+        +markPaid(PaymentResult result) void
+        +markFailed(PaymentResult result) void
+    }
+
+    class OrderService {
+        -PaymentProcessorFactory paymentProcessorFactory
+        -EnrollmentService enrollmentService
+        +checkout(Student s, List~OrderItem~ items, PaymentMethod m, Map details) Order
+    }
+
+    OrderService o-- PaymentProcessorFactory
+    OrderService o-- Order
+    PaymentProcessorFactory o-- PaymentProcessor
 ```
 
 ---
 
-## 4. Key Sequence Flows
+## 4. Key Sequence Workflows
 
-### 4.1 Course Publishing Pipeline with Chain of Responsibility & State Pattern
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Instructor
-    participant Course as Course Aggregate
-    participant State as DraftCourseState
-    participant Pipeline as CourseValidationPipeline
-    participant InstVal as InstructorValidator
-    participant CurrVal as CurriculumCompletenessValidator
-    participant VideoVal as VideoQualityValidator
-    participant PubState as PublishedCourseState
-
-    Instructor ->> Course: publish()
-    Course ->> State: publish(course)
-    State ->> Pipeline: validate(course)
-    Pipeline ->> InstVal: validate(course)
-    Note over InstVal: Verifies >=1 instructor & 100% revenue share
-    InstVal ->> CurrVal: validate(course)
-    Note over CurrVal: Verifies non-empty modules & lectures
-    CurrVal ->> VideoVal: validate(course)
-    Note over VideoVal: Verifies video content & duration > 0
-    VideoVal -->> State: Validation Passed!
-    State ->> Course: setState(new PublishedCourseState())
-    Note over Course: Status is now PUBLISHED; enrollments enabled!
-```
-
-### 4.2 Resumable Playback with Drop-off Tracking
+### 4.1 Multi-Course Checkout & Automatic Enrollment
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Learner as Student
     participant Platform as UdemyLearningPlatform
-    participant PlaybackSvc as PlaybackService
-    participant Enrollment as Enrollment
-    participant Progress as CourseProgress
+    participant OrderSvc as OrderService
+    participant Factory as PaymentProcessorFactory
+    participant Processor as PaymentProcessor
+    participant EnrollSvc as EnrollmentService
 
-    Note over Learner, Platform: Learner watched 10 mins (600s) of a 30 mins lecture, then closed browser
-    Learner ->> Platform: resumePlayback(student, courseId)
-    Platform ->> PlaybackSvc: resumePlayback(enrollment)
-    PlaybackSvc ->> Enrollment: resumePlayback()
-    Enrollment ->> Progress: getResumeSnapshot(course)
-    Progress -->> Enrollment: PlaybackResumeSnapshot(offset = 600s, total = 1800s, formatted = "10:00 / 30:00")
-    Enrollment -->> PlaybackSvc: Optional[PlaybackResumeSnapshot]
-    PlaybackSvc -->> Platform: Optional[PlaybackResumeSnapshot]
-    Platform -->> Learner: Resume snapshot {lecture: "Fiber Nodes", offset: 600s}
-    Note over Learner: Video player seeks directly to 10:00 mark!
+    Learner ->> Platform: purchaseCourses(student, [Course1, Course2], UPI, {vpa: "user@okaxis"})
+    Platform ->> OrderSvc: checkout(student, items, UPI, details)
+    OrderSvc ->> OrderSvc: Calculate total amount (₹8998)
+    OrderSvc ->> Factory: getProcessor(UPI)
+    Factory -->> OrderSvc: UPIPaymentProcessor
+    OrderSvc ->> Processor: process(PaymentRequest)
+    Processor -->> OrderSvc: PaymentResult.success("Approved via NPCI")
+    OrderSvc ->> OrderSvc: order.markPaid(result)
+    loop For each purchased course
+        OrderSvc ->> EnrollSvc: enroll(student, course)
+        Note over EnrollSvc: Atomically creates Enrollment for student
+    end
+    OrderSvc -->> Platform: Order (Status: PAID)
+    Platform -->> Learner: Checkout Success! Both courses enrolled.
+```
+
+### 4.2 Playback Seek & Bookmark with Command Undo
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Learner as Student
+    participant Manager as PlaybackHistoryManager
+    participant SeekCmd as SeekPlaybackCommand
+    participant BookmarkCmd as AddBookmarkCommand
+    participant Enrollment as Enrollment
+
+    Learner ->> Manager: executeCommand(SeekPlaybackCommand(target = 600s))
+    Manager ->> SeekCmd: execute()
+    SeekCmd ->> Enrollment: recordPlayback(lecId, 600s, 1800s)
+    Note over Manager: Pushed to undoStack
+
+    Learner ->> Manager: executeCommand(AddBookmarkCommand("Key concurrency concept"))
+    Manager ->> BookmarkCmd: execute()
+    Note over Manager: Pushed to undoStack
+
+    Learner ->> Manager: undo()
+    Manager ->> BookmarkCmd: undo()
+    Note over BookmarkCmd: Bookmark removed from lecture!
+
+    Learner ->> Manager: undo()
+    Manager ->> SeekCmd: undo()
+    SeekCmd ->> Enrollment: recordPlayback(lecId, 0s, 1800s)
+    Note over SeekCmd: Playback offset reverted back to 0:00!
 ```
